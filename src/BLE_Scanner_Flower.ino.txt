@@ -1,0 +1,71 @@
+/**
+ * BLE Scanner — identify Flower beacon MAC address
+ * Scans continuously and prints all detected BLE devices with RSSI.
+ * Look for the device that appears/disappears when you insert/remove the Flower battery.
+ */
+#include <BLEDevice.h>
+#include <BLEScan.h>
+#include <BLEAdvertisedDevice.h>
+
+// Known beacons (so we can label them in output)
+struct KnownBeacon {
+  const char* name;
+  const char* mac;
+};
+
+KnownBeacon known[] = {
+  {"Strawberry", "f2:6c:8d:69:56:5d"},
+  {"Flower",     "c5:45:6a:b7:9c:d5"},
+  {"Dog",        "d8:fe:b6:49:be:57"},
+  {"Cat",        "d5:65:c6:25:a1:5a"},
+  {"Dumbo",      "e6:b9:7d:7d:4b:8e"},
+  {"Penguin",    "d6:e7:1f:86:0b:56"},
+};
+const int NUM_KNOWN = sizeof(known) / sizeof(KnownBeacon);
+
+const char* lookupName(const char* mac) {
+  for (int i = 0; i < NUM_KNOWN; i++) {
+    if (strcasecmp(mac, known[i].mac) == 0) return known[i].name;
+  }
+  return nullptr;
+}
+
+BLEScan* pScan;
+int scanNum = 0;
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  Serial.println("\n=== FLOWER BEACON FINDER ===");
+  Serial.println("Insert/remove Flower battery and watch for MAC that appears/disappears.\n");
+
+  BLEDevice::init("");
+  pScan = BLEDevice::getScan();
+  pScan->setActiveScan(true);
+  pScan->setInterval(100);
+  pScan->setWindow(99);
+}
+
+void loop() {
+  scanNum++;
+  Serial.printf("--- Scan #%d ---\n", scanNum);
+
+  BLEScanResults results = pScan->start(5, false);
+  int count = results.getCount();
+
+  for (int i = 0; i < count; i++) {
+    BLEAdvertisedDevice d = results.getDevice(i);
+    const char* mac = d.getAddress().toString().c_str();
+    int rssi = d.getRSSI();
+    const char* label = lookupName(mac);
+
+    if (label) {
+      Serial.printf("  *** %s *** %s  RSSI: %d dBm\n", label, mac, rssi);
+    } else {
+      Serial.printf("  UNKNOWN  %s  RSSI: %d dBm\n", mac, rssi);
+    }
+  }
+
+  Serial.printf("  Total: %d devices\n\n", count);
+  pScan->clearResults();
+}

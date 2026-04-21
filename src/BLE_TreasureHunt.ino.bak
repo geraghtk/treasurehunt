@@ -1,0 +1,234 @@
+/**
+* Bluetooth BLE Beacon Treasure Hunt
+* Copyright 2025 Alastair Aitchison, Playful Technology
+*/
+ 
+// DEFINES
+// Advertise a BLE service to enable remote override of current clue
+#define SERVICE_UUID        "12345678-1234-1234-1234-1234567890ab"
+#define CLUE_CHAR_UUID      "abcd1234-abcd-1234-abcd-12345678abcd"
+
+// INCLUDES
+// For scanning nearby BLE beacons
+#include <BLEDevice.h>
+#include <BLEScan.h>
+#include <BLEAdvertisedDevice.h>
+#include <BLEBeacon.h>
+// For advertising BLE characteristic allowing manual override
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
+// For saving progress
+#include <Preferences.h>
+// e-Paper display library. See https://github.com/ZinggJM/GxEPD2
+#include <GxEPD2_BW.h>
+// Font from https://github.com/adafruit/Adafruit-GFX-Library/tree/master/Fonts
+#include <Fonts/FreeMonoBold12pt7b.h>
+// Clue images (as byte arrays, created with https://javl.github.io/image2cpp/)
+#include "ImageData.h"
+
+// STRUCTS
+// Treasure hunt clues & corresponding beacon UUIDs
+struct Clue {
+  const uint8_t mac[6];
+  const char* text;
+  const uint16_t imageWidth;
+  const uint16_t imageHeight;
+  const unsigned char* imageData;
+};
+
+// CONSTANTS
+constexpr int SCAN_DURATION = 5;
+constexpr Clue clues[] = {
+    {{0xF5, 0x3B, 0xE6, 0xB9, 0x6E, 0xD0}, "Your path begins\nat a living arc,\nfrom earth to sky\nthen back to bark.", 300, 207, epd_bitmap_tree},
+    {{0xCB, 0x15, 0x19, 0xB6, 0x82, 0x06}, "Step with care\na tree once stood,\nyet now lies down\nabove the flood.", 300, 156, epd_bitmap_river_trunk},
+    {{0XC7, 0xD7, 0x17, 0xAA, 0x13, 0x98}, "Beneath the trees\na gorge runs deep,\na winding trail\nwhere secrets sleep.", 300, 169, epd_bitmap_path},
+    {{0XE3, 0x66, 0x27, 0x0D, 0x49, 0x47}, "An ancient guard\nits heart long gone,\na hollow soul\nto journey on.", 300, 300, epd_bitmap_logo}};
+constexpr int TOTAL_CLUES = sizeof(clues) / sizeof(Clue);
+// Threshold of how strong signal needs to be. Range from -90 (weak) to 0 (strong)
+// Higher values (i.e. less negative, closer to zero) mean the player will need to get closer to each beacon 
+constexpr int RSSI_THRESHOLD = -90;
+
+// GLOBALS
+// Object to perform BLE scan
+BLEScan *pBLEScan;
+// Allows progress to be stored in persistent non-volatile memory
+Preferences preferences;
+// Create e-Paper display object 
+GxEPD2_BW<GxEPD2_420, GxEPD2_420::HEIGHT> display(GxEPD2_420(/*CS=*/ 5, /*DC=*/ 17, /*RST=*/ 16, /*BUSY=*/ 4));
+// Counter of current progress
+int currentClueIndex = 0;
+// Advertised BLE characteristic for manual override
+BLECharacteristic *currentClueCharacteristic;
+
+// DRAWING FUNCTIONS (prototypes — Arduino IDE generates these automatically; PlatformIO needs them)
+void drawMultilineCenteredText(const char* text, int startY, int lineHeight);
+void drawStartScreen();
+void drawClueScreen();
+
+// CALLBACKS
+/**
+ * Callback when new value is assigned to the current clue characteristic
+ */
+class currentClueCallback : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *pCharacteristic) override {
+    std::string value = pCharacteristic->getValue();
+    if(value.length() > 0) {
+      int newIndex = atoi(value.c_str());
+      if(newIndex >= 0 && newIndex < TOTAL_CLUES) {
+        currentClueIndex = newIndex;
+        preferences.putInt("progress", currentClueIndex);
+        drawClueScreen();
+        Serial.printf("Clue index manually set to %d\n", currentClueIndex);
+      }
+    }
+  }
+};
+
+/**
+ * Callback when new BLE beacon is in range
+ */
+class advertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
+  void onResult(BLEAdvertisedDevice advertisedDevice) override {
+    uint8_t* detectedMAC = (uint8_t*)advertisedDevice.getAddress().getNative();
+    int rssi = advertisedDevice.getRSSI();
+    if(rssi > RSSI_THRESHOLD) { // Beacon is close enough
+      if (memcmp(detectedMAC, clues[currentClueIndex].mac, 6) == 0 && rssi > RSSI_THRESHOLD) {
+        Serial.println("Found correct beacon with good signal!");
+        // If we haven't yet reached the end of the hunt
+        if (currentClueIndex < TOTAL_CLUES - 1) {
+          currentClueIndex++;
+          preferences.putInt("progress", currentClueIndex);
+          drawClueScreen();
+        } 
+        else {
+          Serial.println("Congratulations!\nYou found the treasure!");
+        }
+      }
+    }
+  }
+};
+
+/**
+ * Helper function to draw centre-aligned multiline clue text
+ */
+void drawMultilineCenteredText(const char* text, int startY, int lineHeight) {
+  char buffer[256];
+  strncpy(buffer, text, sizeof(buffer));
+  buffer[sizeof(buffer) - 1] = '\0';
+  char* line = strtok(buffer, "\n");
+  int y = startY;
+  while (line != nullptr) {
+    int16_t tbx, tby;
+    uint16_t tbw, tbh;
+    display.getTextBounds(line, 0, y, &tbx, &tby, &tbw, &tbh);
+    int16_t x = (display.width() - tbw) / 2;
+    display.setCursor(x, y);
+    display.print(line);
+    y += lineHeight;
+    line = strtok(nullptr, "\n");
+  }
+}
+
+/**
+ * Fullscreen splash/title screen on startup
+ */
+void drawStartScreen(){
+  // If display has previously been put into hibernation, need to re-initialise it
+  display.init(115200, true, 2, false);
+  display.setRotation(3); // Set portait (this setting is not saved when hibenating)
+  display.setFullWindow();
+  display.firstPage();
+  do {
+    // 1.) Clear screen
+    display.fillScreen(GxEPD_WHITE);
+    // 2.) Draw Bitmap
+    display.drawInvertedBitmap(0, 0, epd_bitmap_title, 300, 400, GxEPD_BLACK);
+  }
+  while (display.nextPage());
+  display.hibernate();
+}
+
+/**
+ * Draw image and text for current clue
+ */
+void drawClueScreen(){
+  // If display has previously been put into hibernation, need to re-initialise it
+  display.init(115200, true, 2, false);
+  display.setRotation(3); // Set portait (this setting is not saved when hibernating)
+  display.setFullWindow();
+  display.firstPage();
+  do {
+    // 1.) Clear screen
+    display.fillScreen(GxEPD_WHITE);
+
+    // 2.) Draw Bitmap
+    uint16_t bmpWidth = clues[currentClueIndex].imageWidth;
+    uint16_t bmpHeight = clues[currentClueIndex].imageHeight;
+    // Calculate screen-space coordinates so bitmap drawn aligned to bottom of the screen
+    uint16_t x = (300 - bmpWidth) / 2;                   // horizontal centre-aligned
+    uint16_t y = 400 - bmpHeight;     // vertixal aligned to bottom
+    display.drawInvertedBitmap(x, y, clues[currentClueIndex].imageData, bmpWidth, bmpHeight, GxEPD_BLACK);
+
+    // 3.) Draw Text
+    const GFXfont* currentFont = &FreeMonoBold12pt7b;
+    display.setFont(currentFont);
+    display.setTextColor(GxEPD_BLACK);
+    uint16_t lineHeight = currentFont->yAdvance;
+    drawMultilineCenteredText(clues[currentClueIndex].text, 50, lineHeight);
+  }
+  while (display.nextPage());
+  display.hibernate();
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(500);
+  Serial.println(__FILE__ __DATE__);
+  Serial.print(TOTAL_CLUES);
+  Serial.println(" clues loaded.");
+
+  // Display
+  Serial.println("Initialising e-Paper Display");
+  SPI.begin(/*CLK=*/18, /*MISO=*/19,/*MOSI=*/23,/*CS=*/5); // Initialise SPI interface
+  display.init(115200, true, 2, false); // Initialise the e-Paper display by resetting with 2ms pulse
+  display.setRotation(3); // Set portrait orientation
+  drawStartScreen();
+  delay(10000);
+  drawClueScreen();
+  display.hibernate();
+
+  // Load previous progress
+  preferences.begin("TreasureHunt", false);
+  currentClueIndex = preferences.getInt("progress", 0);
+
+  // Initialise Bluetooth
+  BLEDevice::init("");
+
+  // Start BLE scanning
+  pBLEScan = BLEDevice::getScan();
+  pBLEScan->setAdvertisedDeviceCallbacks(new advertisedDeviceCallbacks());
+  pBLEScan->setActiveScan(true);
+  pBLEScan->setInterval(100);
+  pBLEScan->setWindow(99);
+
+  // Create BLE characteristic service
+  BLEServer *pServer = BLEDevice::createServer();
+  BLEService *pService = pServer->createService(SERVICE_UUID);
+  currentClueCharacteristic = pService->createCharacteristic(
+    CLUE_CHAR_UUID,
+    BLECharacteristic::PROPERTY_WRITE
+  );
+  currentClueCharacteristic->setCallbacks(new currentClueCallback());
+  currentClueCharacteristic->addDescriptor(new BLE2902());
+  pService->start();
+  // Advertise BLE service
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->start();
+}
+
+void loop() {
+  pBLEScan->start(SCAN_DURATION, false);
+  Serial.printf("Scanning... Current Clue: %d\n", currentClueIndex + 1);
+}

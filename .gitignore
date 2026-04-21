@@ -1,0 +1,35 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+.clang_complete
+.gcc-flags.json
+compile_commands.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Node (e.g. tools/web-monitor)
+node_modules/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Local / secrets (do not commit)
+.claude/settings.local.json
+*.local.json
+.env
+.env.*
+
+# Build outputs at repo root (if any)
+*.elf
+*.bin

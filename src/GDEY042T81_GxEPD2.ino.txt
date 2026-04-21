@@ -1,0 +1,69 @@
+/**
+ * Simple e-paper display test for ESP32-C3-Zero + GDEY042T81 (SSD1683)
+ * Draws solid black screen, then "Hello World" text.
+ */
+#include <GxEPD2_BW.h>
+#include <Fonts/FreeMonoBold12pt7b.h>
+
+// ESP32-C3-Zero pin assignments
+#define PIN_CS   7
+#define PIN_DC   1
+#define PIN_RST  2
+#define PIN_BUSY 3
+#define PIN_CLK  4
+#define PIN_DIN  6
+
+GxEPD2_BW<GxEPD2_420_GDEY042T81, GxEPD2_420_GDEY042T81::HEIGHT>
+  display(GxEPD2_420_GDEY042T81(PIN_CS, PIN_DC, PIN_RST, PIN_BUSY));
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  Serial.println("\n=== ESP32-C3-Zero E-Paper Test ===");
+
+  // Init SPI on the C3's pins
+  SPI.begin(PIN_CLK, -1, PIN_DIN, PIN_CS);
+
+  Serial.printf("Pins: CS=%d DC=%d RST=%d BUSY=%d CLK=%d DIN=%d\n",
+                PIN_CS, PIN_DC, PIN_RST, PIN_BUSY, PIN_CLK, PIN_DIN);
+  Serial.printf("BUSY before init: %d\n", digitalRead(PIN_BUSY));
+
+  Serial.println("Calling display.init...");
+  uint32_t t0 = millis();
+  display.init(115200, true, 2, false);  // serial diag, reset, pulldown
+  uint32_t dt = millis() - t0;
+  Serial.printf("display.init took %lums, BUSY=%d\n", dt, digitalRead(PIN_BUSY));
+
+  // Test 1: Fill screen black
+  Serial.println("Drawing solid black...");
+  display.setFullWindow();
+  display.firstPage();
+  do {
+    display.fillScreen(GxEPD_BLACK);
+  } while (display.nextPage());
+  Serial.println("Black screen done.");
+
+  delay(3000);
+
+  // Test 2: White screen with text
+  Serial.println("Drawing text...");
+  display.setFullWindow();
+  display.firstPage();
+  do {
+    display.fillScreen(GxEPD_WHITE);
+    display.setTextColor(GxEPD_BLACK);
+    display.setFont(&FreeMonoBold12pt7b);
+    display.setCursor(20, 100);
+    display.println("Hello World!");
+    display.setCursor(20, 140);
+    display.println("ESP32-C3-Zero");
+    display.setCursor(20, 180);
+    display.println("GDEY042T81 OK");
+  } while (display.nextPage());
+  Serial.println("Text drawn.");
+
+  display.hibernate();
+  Serial.println("=== Test complete ===");
+}
+
+void loop() {}

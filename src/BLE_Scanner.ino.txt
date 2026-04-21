@@ -1,0 +1,56 @@
+/**
+ * Beacon presence checker - confirms which of the 6 treasure hunt beacons are active
+ */
+#include <BLEDevice.h>
+#include <BLEScan.h>
+#include <BLEAdvertisedDevice.h>
+#include <map>
+#include <string>
+
+constexpr int SCAN_DURATION = 5;
+BLEScan* pBLEScan;
+std::map<std::string, int> active; // MAC -> RSSI
+
+const char* BEACONS[][2] = {
+  {"f2:6c:8d:69:56:5d", "Strawberry"},
+  {"c5:45:6a:b7:9c:d5", "Flower"},
+  {"d8:fe:b6:49:be:57", "Dog"},
+  {"d5:65:c6:25:a1:5a", "Cat"},
+  {"e6:b9:7d:7d:4b:8e", "Dumbo"},
+  {"d6:e7:1f:86:0b:56", "Penguin"}
+};
+
+class ScanCallbacks : public BLEAdvertisedDeviceCallbacks {
+  void onResult(BLEAdvertisedDevice device) override {
+    active[device.getAddress().toString()] = device.getRSSI();
+  }
+};
+
+void setup() {
+  Serial.begin(115200);
+  delay(500);
+  BLEDevice::init("");
+  pBLEScan = BLEDevice::getScan();
+  pBLEScan->setAdvertisedDeviceCallbacks(new ScanCallbacks());
+  pBLEScan->setActiveScan(true);
+  pBLEScan->setInterval(100);
+  pBLEScan->setWindow(99);
+}
+
+void loop() {
+  active.clear();
+  pBLEScan->start(SCAN_DURATION, false);
+  Serial.println("\n--- Beacon status ---");
+  bool allClear = true;
+  for (int i = 0; i < 6; i++) {
+    auto it = active.find(std::string(BEACONS[i][0]));
+    bool found = it != active.end();
+    if (found) {
+      Serial.printf("  %s (%s): DETECTED (%d dBm)\n", BEACONS[i][1], BEACONS[i][0], it->second);
+      allClear = false;
+    } else {
+      Serial.printf("  %s (%s): not seen\n", BEACONS[i][1], BEACONS[i][0]);
+    }
+  }
+  Serial.println(allClear ? "All clear - no beacons detected!" : "WARNING: beacon(s) detected!");
+}
