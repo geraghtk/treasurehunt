@@ -378,8 +378,10 @@ void setup() {
   Serial.printf("drawStartScreen took %lums\n", millis() - t0);
   Serial.println("Waiting for BLE 'START' command...");
 
-  // Initialise Bluetooth
-  BLEDevice::init("");
+  // Initialise Bluetooth. The device name is what BLE scanners (Bluefy, the
+  // BTEscapeRoomController webapp, nRF Connect) display in their device list,
+  // so set it to something recognisable.
+  BLEDevice::init("TreasureHunt");
 
   // Start BLE scanning
   pBLEScan = BLEDevice::getScan();
@@ -398,9 +400,29 @@ void setup() {
   currentClueCharacteristic->setCallbacks(new currentClueCallback());
   currentClueCharacteristic->addDescriptor(new BLE2902());
   pService->start();
-  // Advertise BLE service
+  // Split-packet advertising so iOS/Bluefy can find us via the webapp:
+  //   - Primary packet carries Flags + 128-bit service UUID. CoreBluetooth's
+  //     `scanForPeripheralsWithServices` matches only against AD types in the
+  //     primary packet, so the UUID must live here for the controller's
+  //     `{services: [...]}` filter to work on iOS — iOS doesn't support a
+  //     `name:` scan filter at the OS level, which is why a name-only
+  //     advertisement makes the prop invisible to a filtered `requestDevice`
+  //     on Bluefy (it only shows up under `acceptAllDevices`).
+  //   - Scan response carries the complete local name. iOS active-scans on
+  //     filtered discovery, picks up the scan response, and merges the name
+  //     into `peripheral.name`, so the device still displays as "TreasureHunt".
   BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
-  pAdvertising->addServiceUUID(SERVICE_UUID);
+
+  BLEAdvertisementData advData;
+  advData.setFlags(0x06);  // LE General Discoverable + BR/EDR Not Supported
+  advData.setCompleteServices(BLEUUID(SERVICE_UUID));
+  pAdvertising->setAdvertisementData(advData);
+
+  BLEAdvertisementData scanResp;
+  scanResp.setName("TreasureHunt");
+  pAdvertising->setScanResponseData(scanResp);
+
+  pAdvertising->setScanResponse(true);
   pAdvertising->start();
 
   Serial.println("Setup complete.");
