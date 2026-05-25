@@ -92,6 +92,10 @@ int currentClueIndex = 0;
 bool huntStarted = false;
 // Advertised BLE characteristic for manual override
 BLECharacteristic *currentClueCharacteristic;
+// Count of concurrently-connected centrals. We allow more than one so a peer
+// prop, or a second operator phone, can connect alongside the controller.
+// The Bluedroid stack defaults to 3 simultaneous incoming connections.
+volatile uint8_t bleConnections = 0;
 // NeoPixel ring for proximity feedback
 Adafruit_NeoPixel ring(NUM_LEDS, PIN_NEOPIXEL, NEO_GRB + NEO_KHZ800);
 // Latest RSSI observed for the current target beacon (INT_MIN = never seen / stale).
@@ -172,6 +176,24 @@ class currentClueCallback : public BLECharacteristicCallbacks {
         Serial.printf("Clue index manually set to %d\n", currentClueIndex);
       }
     }
+  }
+};
+
+/**
+ * Tracks how many centrals are connected and keeps the prop advertising even
+ * after a connection lands. Without restarting advertising on connect, only one
+ * central can ever find us — the second phone / peer prop sees an empty scan.
+ */
+class serverCallback : public BLEServerCallbacks {
+  void onConnect(BLEServer*) override {
+    bleConnections++;
+    Serial.printf("[BLE] peer connected (now %u)\n", bleConnections);
+    BLEDevice::startAdvertising();
+  }
+  void onDisconnect(BLEServer*) override {
+    if (bleConnections > 0) bleConnections--;
+    Serial.printf("[BLE] peer disconnected (now %u)\n", bleConnections);
+    BLEDevice::startAdvertising();
   }
 };
 
@@ -392,6 +414,7 @@ void setup() {
 
   // Create BLE characteristic service
   BLEServer *pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new serverCallback());
   BLEService *pService = pServer->createService(SERVICE_UUID);
   currentClueCharacteristic = pService->createCharacteristic(
     CLUE_CHAR_UUID,
