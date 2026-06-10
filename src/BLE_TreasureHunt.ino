@@ -29,6 +29,8 @@
 #include <BLEBeacon.h>
 // For advertising BLE characteristic allowing manual override
 #include <BLEServer.h>
+// For connecting out to the VoiceRecognizer prop to trigger its finale sound
+#include <BLEClient.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
 // For saving progress
@@ -62,12 +64,12 @@ constexpr int SCAN_DURATION = 2;
 //   Dumbo      : e6:b9:7d:7d:4b:8e
 //   Penguin    : d6:e7:1f:86:0b:56
 constexpr Clue clues[] = {
-    {{0xE4, 0xCE, 0x26, 0x90, 0x96, 0xCF}, "Step with care\na tree once stood,\nyet now lies down\nabove the flood.", 300, 156, epd_bitmap_river_trunk},      // Flower
-    {{0xF2, 0x6C, 0x8D, 0x69, 0x56, 0x5D}, "Your path begins\nat a living arc,\nfrom earth to sky\nthen back to bark.", 300, 207, epd_bitmap_tree},        // Strawberry
-    {{0xD8, 0xFE, 0xB6, 0x49, 0xBE, 0x57}, "Beneath the trees\na gorge runs deep,\na winding trail\nwhere secrets sleep.", 300, 169, epd_bitmap_path},      // Dog
-    {{0xD5, 0x65, 0xC6, 0x25, 0xA1, 0x5A}, "An ancient guard\nits heart long gone,\na hollow soul\nto journey on.", 300, 300, epd_bitmap_logo},              // Cat
-    {{0xE6, 0xB9, 0x7D, 0x7D, 0x4B, 0x8E}, "Full and round,\nits branches spread,\na bushy crown\nabove your head.", 300, 200, epd_bitmap_logo},             // Dumbo   TODO: replace image
-    {{0xD6, 0xE7, 0x1F, 0x86, 0x0B, 0x56}, "Where paws have worn\nthe ground down flat,\na loyal friend\nreturns to that.", 300, 200, epd_bitmap_logo}};    // Penguin TODO: replace image
+    {{0xE4, 0xCE, 0x26, 0x90, 0x96, 0xCF}, "Step with care\na tree once stood,\nyet now lies down\nabove the flood.", 300, 260, epd_bitmap_picnic},      // Flower
+    {{0xF2, 0x6C, 0x8D, 0x69, 0x56, 0x5D}, "Your path begins\nat a living arc,\nfrom earth to sky\nthen back to bark.", 300, 260, epd_bitmap_exercise},        // Strawberry
+    {{0xD8, 0xFE, 0xB6, 0x49, 0xBE, 0x57}, "Beneath the trees\na gorge runs deep,\na winding trail\nwhere secrets sleep.", 300, 260, epd_bitmap_smallslide},      // Dog
+    {{0xD5, 0x65, 0xC6, 0x25, 0xA1, 0x5A}, "An ancient guard\nits heart long gone,\na hollow soul\nto journey on.", 300, 260, epd_bitmap_windyslide},              // Cat
+    {{0xE6, 0xB9, 0x7D, 0x7D, 0x4B, 0x8E}, "Full and round,\nits branches spread,\na bushy crown\nabove your head.", 300, 260, epd_bitmap_stonehenge},             // Dumbo 
+    {{0xD6, 0xE7, 0x1F, 0x86, 0x0B, 0x56}, "Where paws have worn\nthe ground down flat,\na loyal friend\nreturns to that.", 300, 260, epd_bitmap_tennis}};    // Penguin 
 constexpr int TOTAL_CLUES = sizeof(clues) / sizeof(Clue);
 // Threshold of how strong signal needs to be. Range from -90 (weak) to 0 (strong)
 // Higher values (i.e. less negative, closer to zero) mean the player will need to get closer to each beacon
@@ -100,7 +102,7 @@ volatile uint8_t bleConnections = 0;
 Adafruit_NeoPixel ring(NUM_LEDS, PIN_NEOPIXEL, NEO_GRB + NEO_KHZ800);
 // Latest RSSI observed for the current target beacon (INT_MIN = never seen / stale).
 int currentTargetRssi = INT_MIN;
-// Position of the rotating "searching" pixel when no target signal is detected.
+// Position of the comet head for the idle "searching" animation (no target signal).
 int idleIndex = 0;
 // Whether an async BLE scan is currently in progress.
 volatile bool scanRunning = false;
@@ -120,6 +122,20 @@ uint32_t lastAdvanceMs = 0;
 // and the rainbow victory ring animation.
 bool huntComplete = false;
 
+// VoiceRecognizer finale trigger. Once the hunt is complete, the book keeps
+// scanning and — when it sees the VoiceRecognizer prop at a close-enough signal —
+// connects to it and writes a "play track 10" command so it plays 0010.mp3.
+// Fires once per power cycle. The connect happens on the Arduino task (loop()),
+// never on the BLE scan callback (a client connect blocks for up to a few seconds).
+constexpr char VOICE_DEVICE_NAME[] = "VoiceRecognizer";
+constexpr int  VOICE_RSSI_THRESHOLD = -60;  // "reasonable signal" proximity gate
+// VoiceRecognizer's Nordic UART Service + its RX characteristic (central -> prop).
+static BLEUUID VOICE_NUS_SERVICE("6E400001-B5A3-F393-E0A9-E50E24DCCA9E");
+static BLEUUID VOICE_NUS_RX("6E400002-B5A3-F393-E0A9-E50E24DCCA9E");
+volatile bool pendingPlayVoice = false;  // set from scan callback, serviced in loop()
+bool voicePlayed = false;                // one-shot latch
+BLEAddress voiceAddress("00:00:00:00:00:00");  // captured VoiceRecognizer address
+
 // Deferred UI work requested from BLE callbacks. E-paper refresh takes ~4 seconds
 // and must not run on the BLE task.
 enum PendingDraw : uint8_t { DRAW_NONE, DRAW_START, DRAW_CLUE, DRAW_FINALE };
@@ -130,10 +146,12 @@ volatile bool pendingStopScan = false;
 void drawMultilineCenteredText(const char* text, int startY, int lineHeight);
 void drawStartScreen();
 void drawClueScreen();
+void drawDivider(int16_t y);
 void updateProximityRing(int rssi);
 void scanCompleteCallback(BLEScanResults results);
 void drawFinaleScreen();
 void animateVictoryRing();
+bool triggerVoiceRecognizer();
 
 // CALLBACKS
 /**
@@ -163,6 +181,25 @@ class currentClueCallback : public BLECharacteristicCallbacks {
           Serial.println("Hunt started via BLE!");
           pendingDraw = DRAW_CLUE;
         }
+        return;
+      }
+      // "done" = force hunt completion, exactly as if the final beacon had been
+      // found: show the finale screen, run the victory ring, and let loop() trigger
+      // the VoiceRecognizer finale sound. Must come before the atoi() fallback below
+      // (atoi("done") == 0, which would otherwise jump to the first clue). Clearing
+      // the voice latch lets the Oracle sound fire again even after a prior win.
+      if(value == "done") {
+        huntStarted = true;
+        huntComplete = true;
+        currentClueIndex = TOTAL_CLUES - 1;
+        preferences.putInt("progress", currentClueIndex);
+        voicePlayed = false;
+        pendingPlayVoice = false;
+        currentTargetRssi = INT_MIN;
+        lastTargetSeenMs = 0;
+        Serial.println("Hunt completed via BLE — showing finale.");
+        pendingStopScan = true;
+        pendingDraw = DRAW_FINALE;
         return;
       }
       // Other numeric values set the clue index directly (2+)
@@ -204,7 +241,23 @@ class advertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
   void onResult(BLEAdvertisedDevice advertisedDevice) override {
     uint8_t* detectedMAC = (uint8_t*)advertisedDevice.getAddress().getNative();
     int rssi = advertisedDevice.getRSSI();
-    if (huntComplete) return;
+    if (huntComplete) {
+      // After the hunt: watch for the VoiceRecognizer prop and ask it (once) to
+      // play the finale sound when the book gets close. Defer the actual connect
+      // to loop() — it blocks and must not run on the BLE task.
+      if (!voicePlayed && !pendingPlayVoice && rssi >= VOICE_RSSI_THRESHOLD) {
+        bool isVoice = (advertisedDevice.haveName() &&
+                        advertisedDevice.getName() == VOICE_DEVICE_NAME) ||
+                       advertisedDevice.isAdvertisingService(VOICE_NUS_SERVICE);
+        if (isVoice) {
+          voiceAddress = advertisedDevice.getAddress();
+          pendingPlayVoice = true;
+          pendingStopScan = true;
+          Serial.printf("VoiceRecognizer in range (RSSI %d) — will trigger sound.\n", rssi);
+        }
+      }
+      return;
+    }
     if (memcmp(detectedMAC, clues[currentClueIndex].mac, 6) == 0) {
       currentTargetRssi = rssi;
       lastTargetSeenMs = millis();
@@ -267,7 +320,32 @@ void drawStartScreen(){
 }
 
 /**
- * Draw image and text for current clue
+ * Decorative horizontal divider with a centred diamond flourish, used to
+ * separate the clue image (top) from the riddle text (bottom).
+ */
+void drawDivider(int16_t y){
+  const int16_t scrW = display.width();
+  const int16_t cx = scrW / 2;
+  const int16_t margin = 28;   // gap from the screen edges
+  const int16_t gap = 14;      // gap on each side of the centre diamond
+  const int16_t d = 7;         // diamond half-size
+
+  // Horizontal rules flanking the diamond
+  display.drawLine(margin, y, cx - gap, y, GxEPD_BLACK);
+  display.drawLine(cx + gap, y, scrW - margin, y, GxEPD_BLACK);
+
+  // Centre diamond (two filled triangles meeting along the rule)
+  display.fillTriangle(cx, y - d, cx - d, y, cx + d, y, GxEPD_BLACK);
+  display.fillTriangle(cx, y + d, cx - d, y, cx + d, y, GxEPD_BLACK);
+
+  // Small dots capping the outer ends of the rules
+  display.fillCircle(margin, y, 2, GxEPD_BLACK);
+  display.fillCircle(scrW - margin, y, 2, GxEPD_BLACK);
+}
+
+/**
+ * Draw image and text for current clue: image on top, a divider flourish,
+ * then the riddle text on the bottom.
  */
 void drawClueScreen(){
   display.init(115200, true, 2, false);
@@ -280,18 +358,22 @@ void drawClueScreen(){
     uint16_t bmpWidth = clues[currentClueIndex].imageWidth;
     uint16_t bmpHeight = clues[currentClueIndex].imageHeight;
     const int16_t scrW = display.width();
-    const int16_t scrH = display.height();
+
+    // Image flush to the top, horizontally centred.
     int16_t x = (scrW - (int16_t)bmpWidth) / 2;
     if (x < 0) x = 0;
-    int16_t y = scrH - (int16_t)bmpHeight;
-    if (y < 0) y = 0;
-    display.drawInvertedBitmap(x, y, clues[currentClueIndex].imageData, bmpWidth, bmpHeight, GxEPD_BLACK);
+    display.drawInvertedBitmap(x, 0, clues[currentClueIndex].imageData, bmpWidth, bmpHeight, GxEPD_BLACK);
 
+    // Flourish separating the art from the riddle.
+    int16_t dividerY = (int16_t)bmpHeight + 14;
+    drawDivider(dividerY);
+
+    // Riddle text below the divider.
     const GFXfont* currentFont = &FreeMonoBold12pt7b;
     display.setFont(currentFont);
     display.setTextColor(GxEPD_BLACK);
     uint16_t lineHeight = currentFont->yAdvance;
-    drawMultilineCenteredText(clues[currentClueIndex].text, 50, lineHeight);
+    drawMultilineCenteredText(clues[currentClueIndex].text, dividerY + 38, lineHeight);
   }
   while (display.nextPage());
   display.hibernate();
@@ -353,12 +435,24 @@ void updateProximityRing(int rssi) {
       ring.setPixelColor(i, ring.Color(r, g, 0));
     }
   } else {
-    // No (or too-weak) target signal: rotate a dim blue "searching" pixel.
-    if (millis() - lastIdleTick > 150) {
+    // No (or too-weak) target signal: a blue "comet" — a bright head with a
+    // fading tail — streaks around the ring. The tail trails behind the head
+    // (lower indices), opposite the direction of travel.
+    if (millis() - lastIdleTick > 110) {
       idleIndex = (idleIndex + 1) % NUM_LEDS;
       lastIdleTick = millis();
     }
-    ring.setPixelColor(idleIndex, ring.Color(0, 0, 40));
+    constexpr int COMET_TAIL = 6;  // number of LEDs trailing the head
+    for (int k = 0; k <= COMET_TAIL; k++) {
+      int pos = (idleIndex - k + NUM_LEDS) % NUM_LEDS;
+      // Brightness fades from the head (k=0) to a dim ember at the tail tip.
+      float f = (float)(COMET_TAIL - k + 1) / (COMET_TAIL + 1);
+      uint8_t blue  = ring.gamma8((uint8_t)(255.0f * f));
+      // White-hot head: red/green ride a sharper falloff so only the leading
+      // LEDs glow white, fading to a pure blue tail behind them.
+      uint8_t white = ring.gamma8((uint8_t)(255.0f * f * f * f));
+      ring.setPixelColor(pos, ring.Color(white, white, blue));
+    }
   }
   ring.show();
 }
@@ -451,6 +545,43 @@ void setup() {
   Serial.println("Setup complete.");
 }
 
+/**
+ * Connect to the VoiceRecognizer prop and tell it to play the finale track
+ * (writes "p10" to its Nordic UART RX characteristic -> plays /mp3/0010.mp3).
+ * Returns true on success. Must run on the Arduino task (loop()), never on the
+ * BLE scan callback — a client connect blocks for up to a few seconds.
+ *
+ * The client is created once and reused across retries; the esp32 BLE library
+ * has no clean way to free a BLEClient, so we avoid leaking one per attempt.
+ */
+bool triggerVoiceRecognizer() {
+  static BLEClient* voiceClient = nullptr;
+  if (voiceClient == nullptr) voiceClient = BLEDevice::createClient();
+
+  Serial.println("Connecting to VoiceRecognizer...");
+  if (!voiceClient->connect(voiceAddress)) {
+    Serial.println("  connect failed; will retry on next sighting.");
+    return false;
+  }
+
+  bool ok = false;
+  BLERemoteService* svc = voiceClient->getService(VOICE_NUS_SERVICE);
+  if (svc != nullptr) {
+    BLERemoteCharacteristic* rx = svc->getCharacteristic(VOICE_NUS_RX);
+    if (rx != nullptr && rx->canWrite()) {
+      rx->writeValue("p10", false);  // play /mp3/0010.mp3 on the prop
+      Serial.println("  sent play command (p10).");
+      ok = true;
+    } else {
+      Serial.println("  RX characteristic missing / not writable.");
+    }
+  } else {
+    Serial.println("  NUS service not found on VoiceRecognizer.");
+  }
+  voiceClient->disconnect();
+  return ok;
+}
+
 void loop() {
   // Service deferred actions requested from BLE callbacks (scan stop + e-paper draw).
   if (pendingStopScan) {
@@ -469,9 +600,21 @@ void loop() {
     }
   }
 
-  // Hunt complete: rainbow victory animation, no more scanning.
+  // Hunt complete: rainbow victory animation. Keep scanning (just) long enough to
+  // find the VoiceRecognizer prop and trigger its finale sound once.
   if (huntComplete) {
     animateVictoryRing();
+    if (!voicePlayed) {
+      if (pendingPlayVoice) {
+        pendingPlayVoice = false;
+        if (triggerVoiceRecognizer()) voicePlayed = true;
+        // On failure, leave the latch clear; the scan restarts below and retries
+        // the next time VoiceRecognizer is seen in range.
+      } else if (!scanRunning) {
+        scanRunning = true;
+        pBLEScan->start(SCAN_DURATION, scanCompleteCallback, false);
+      }
+    }
     delay(10);
     return;
   }

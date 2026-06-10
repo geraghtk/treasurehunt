@@ -38,6 +38,14 @@ def resolve_input(arg: str) -> Path:
     return p
 
 
+def rotate_cw(img: Image.Image, degrees: int) -> Image.Image:
+    """Rotate clockwise by 0/90/180/270 degrees (phone photos often come in sideways)."""
+    if degrees == 0:
+        return img
+    transpose = {90: Image.ROTATE_270, 180: Image.ROTATE_180, 270: Image.ROTATE_90}[degrees]
+    return img.transpose(transpose)
+
+
 def autocrop_near_white(img: Image.Image, threshold: int = 200) -> Image.Image:
     """Crop off near-white margins. Source images often have off-white borders
     that a strict threshold misses."""
@@ -69,12 +77,89 @@ def to_dither(img: Image.Image, w: int, h: int) -> Image.Image:
     return g.convert("1", dither=Image.Dither.FLOYDSTEINBERG)
 
 
+def equalize_tones(img: Image.Image) -> Image.Image:
+    """Histogram-equalize the luminance. Rescues harsh/backlit photos whose crushed
+    shadows would otherwise dither to solid black. Returns an L-mode image."""
+    return ImageOps.equalize(img.convert("L"))
+
+
+def to_threshold(img: Image.Image, w: int, h: int, level: int = 128) -> Image.Image:
+    """Plain luminance threshold, no dithering or edge detection. The right mode for
+    art that is ALREADY clean line work (e.g. an AI-generated line drawing): dark
+    strokes -> black, paper -> white, strokes stay crisp single lines."""
+    g = img.convert("L").resize((w, h), Image.LANCZOS)
+    return g.point(lambda v: 255 if v >= level else 0, "L").convert("1")
+
+
+def to_adaptive(img: Image.Image, w: int, h: int, block: int = 15, offset: float = 8.0) -> Image.Image:
+    """Local adaptive threshold: a pixel goes black if it's darker than the average
+    of its neighbourhood (a `block`x`block` window) by more than `offset`. Unlike a
+    single global threshold, this keeps faint/thin lines that a fixed cutoff would
+    drop, while flat white areas stay white — best detail retention for clean line
+    art shrunk to e-paper size. Needs numpy + scipy."""
+    import numpy as np
+    from scipy.ndimage import uniform_filter
+
+    g = img.convert("L").resize((w, h), Image.LANCZOS)
+    a = np.asarray(g, dtype=float)
+    local_mean = uniform_filter(a, size=block)
+    out = np.where(a < (local_mean - offset), 0, 255).astype("uint8")
+    return Image.fromarray(out, "L").convert("1")
+
+
 def to_lineart(img: Image.Image, w: int, h: int) -> Image.Image:
     g = img.convert("L").resize((w, h), Image.LANCZOS)
     g = g.filter(ImageFilter.SMOOTH)
     edges = g.filter(ImageFilter.FIND_EDGES)
     inverted = ImageOps.invert(edges)
     return inverted.point(lambda v: 0 if v < 180 else 255, "1")
+
+
+def to_canny(img: Image.Image, w: int, h: int,
+             sigma: float = 1.4, low: float = 0.10, high: float = 0.22) -> Image.Image:
+    """Canny edge detection: denoise, Sobel gradients, non-maximum suppression, and
+    hysteresis thresholding. Identifies continuous lines and rejects isolated speckle,
+    unlike the raw FIND_EDGES kernel in lineart mode. Needs numpy + scipy."""
+    import numpy as np
+    from scipy import ndimage
+
+    g = img.convert("L").resize((w, h), Image.LANCZOS)
+    arr = np.asarray(g, dtype=float) / 255.0
+    sm = ndimage.gaussian_filter(arr, sigma)
+    gx = ndimage.sobel(sm, axis=1)
+    gy = ndimage.sobel(sm, axis=0)
+    mag = np.hypot(gx, gy)
+    mag /= mag.max() + 1e-12
+    ang = np.rad2deg(np.arctan2(gy, gx))
+    ang[ang < 0] += 180
+
+    # Non-maximum suppression: thin each ridge to its peak along the gradient direction.
+    nms = np.zeros_like(mag)
+    H, W = mag.shape
+    for i in range(1, H - 1):
+        for j in range(1, W - 1):
+            a, m = ang[i, j], mag[i, j]
+            if a < 22.5 or a >= 157.5:
+                n1, n2 = mag[i, j - 1], mag[i, j + 1]
+            elif a < 67.5:
+                n1, n2 = mag[i - 1, j + 1], mag[i + 1, j - 1]
+            elif a < 112.5:
+                n1, n2 = mag[i - 1, j], mag[i + 1, j]
+            else:
+                n1, n2 = mag[i - 1, j - 1], mag[i + 1, j + 1]
+            if m >= n1 and m >= n2:
+                nms[i, j] = m
+
+    # Hysteresis: keep strong edges plus weak edges connected to a strong one.
+    strong = nms >= high
+    weak = nms >= low
+    labels, _ = ndimage.label(weak)
+    strong_labels = np.unique(labels[strong])
+    strong_labels = strong_labels[strong_labels > 0]
+    edges = np.isin(labels, strong_labels)
+
+    out = np.where(edges, 0, 255).astype("uint8")  # black lines (0) on white (255)
+    return Image.fromarray(out, "L").convert("1")
 
 
 def pack_msb(img1bit: Image.Image) -> bytes:
@@ -162,9 +247,23 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("image", help="image filename (looked up in src/images_in/) or full path")
     ap.add_argument("name", help="array name suffix; emits epd_bitmap_<name>")
-    ap.add_argument("--mode", choices=("dither", "lineart"), default="dither")
+    ap.add_argument("--mode", choices=("dither", "lineart", "canny", "threshold", "adaptive"), default="dither")
+    ap.add_argument("--threshold", type=int, default=128,
+                    help="threshold mode: luminance cutoff 0-255 (lower = more white, higher = more black)")
+    ap.add_argument("--block", type=int, default=15,
+                    help="adaptive mode: neighbourhood window size in px (odd; larger = coarser)")
+    ap.add_argument("--offset", type=float, default=8.0,
+                    help="adaptive mode: how much darker than the local average a pixel must be to ink black")
+    ap.add_argument("--sigma", type=float, default=1.4,
+                    help="canny: Gaussian denoise strength (higher = fewer, cleaner lines)")
+    ap.add_argument("--low", type=float, default=0.10, help="canny: low hysteresis threshold (0-1)")
+    ap.add_argument("--high", type=float, default=0.22, help="canny: high hysteresis threshold (0-1)")
     ap.add_argument("--width", type=int, default=300)
     ap.add_argument("--height", type=int, default=207)
+    ap.add_argument("--rotate", type=int, choices=(0, 90, 180, 270), default=0,
+                    help="rotate source clockwise this many degrees before processing")
+    ap.add_argument("--equalize", action="store_true",
+                    help="histogram-equalize luminance before conversion (rescues backlit/dark photos)")
     ap.add_argument("--no-crop", action="store_true", help="skip near-white margin auto-crop")
     ap.add_argument("--replace", action="store_true", help="replace existing array of this name")
     ap.add_argument("--header", type=Path, default=DEFAULT_HEADER)
@@ -178,12 +277,24 @@ def main() -> None:
 
     src = resolve_input(args.image)
     img = Image.open(src)
+    img = rotate_cw(img, args.rotate)
 
     if not args.no_crop:
         img = autocrop_near_white(img)
 
-    converter = to_dither if args.mode == "dither" else to_lineart
-    bw = converter(img, args.width, args.height)
+    if args.equalize:
+        img = equalize_tones(img)
+
+    if args.mode == "dither":
+        bw = to_dither(img, args.width, args.height)
+    elif args.mode == "lineart":
+        bw = to_lineart(img, args.width, args.height)
+    elif args.mode == "threshold":
+        bw = to_threshold(img, args.width, args.height, args.threshold)
+    elif args.mode == "adaptive":
+        bw = to_adaptive(img, args.width, args.height, args.block, args.offset)
+    else:
+        bw = to_canny(img, args.width, args.height, args.sigma, args.low, args.high)
 
     if args.preview:
         preview_path = src.with_name(f"{src.stem}.preview.png")
