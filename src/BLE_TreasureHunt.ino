@@ -64,12 +64,12 @@ constexpr int SCAN_DURATION = 2;
 //   Dumbo      : e6:b9:7d:7d:4b:8e
 //   Penguin    : d6:e7:1f:86:0b:56
 constexpr Clue clues[] = {
-    {{0xE4, 0xCE, 0x26, 0x90, 0x96, 0xCF}, "Step with care\na tree once stood,\nyet now lies down\nabove the flood.", 300, 260, epd_bitmap_picnic},      // Flower
-    {{0xF2, 0x6C, 0x8D, 0x69, 0x56, 0x5D}, "Your path begins\nat a living arc,\nfrom earth to sky\nthen back to bark.", 300, 260, epd_bitmap_exercise},        // Strawberry
-    {{0xD8, 0xFE, 0xB6, 0x49, 0xBE, 0x57}, "Beneath the trees\na gorge runs deep,\na winding trail\nwhere secrets sleep.", 300, 260, epd_bitmap_smallslide},      // Dog
+    {{0xE4, 0xCE, 0x26, 0x90, 0x96, 0xCF}, "Step with care\na tree once stood,\nyet now lies down\nabove the flood.", 300, 260, epd_bitmap_stonehenge},      // Flower
+    {{0xF2, 0x6C, 0x8D, 0x69, 0x56, 0x5D}, "Your path begins\nat a living arc,\nfrom earth to sky\nthen back to bark.", 300, 260, epd_bitmap_smallslide},        // Strawberry
+    {{0xD8, 0xFE, 0xB6, 0x49, 0xBE, 0x57}, "Beneath the trees\na gorge runs deep,\na winding trail\nwhere secrets sleep.", 300, 260, epd_bitmap_exercise},      // Dog
     {{0xD5, 0x65, 0xC6, 0x25, 0xA1, 0x5A}, "An ancient guard\nits heart long gone,\na hollow soul\nto journey on.", 300, 260, epd_bitmap_windyslide},              // Cat
-    {{0xE6, 0xB9, 0x7D, 0x7D, 0x4B, 0x8E}, "Full and round,\nits branches spread,\na bushy crown\nabove your head.", 300, 260, epd_bitmap_stonehenge},             // Dumbo 
-    {{0xD6, 0xE7, 0x1F, 0x86, 0x0B, 0x56}, "Where paws have worn\nthe ground down flat,\na loyal friend\nreturns to that.", 300, 260, epd_bitmap_tennis}};    // Penguin 
+    {{0xE6, 0xB9, 0x7D, 0x7D, 0x4B, 0x8E}, "Full and round,\nits branches spread,\na bushy crown\nabove your head.", 300, 260, epd_bitmap_tennis},             // Dumbo
+    {{0xD6, 0xE7, 0x1F, 0x86, 0x0B, 0x56}, "Where paws have worn\nthe ground down flat,\na loyal friend\nreturns to that.", 300, 260, epd_bitmap_picnic}};    // Penguin
 constexpr int TOTAL_CLUES = sizeof(clues) / sizeof(Clue);
 // Threshold of how strong signal needs to be. Range from -90 (weak) to 0 (strong)
 // Higher values (i.e. less negative, closer to zero) mean the player will need to get closer to each beacon
@@ -392,7 +392,12 @@ void drawFinaleScreen() {
     display.setFont(&FreeMonoBold12pt7b);
     display.setTextColor(GxEPD_BLACK);
     uint16_t lineHeight = FreeMonoBold12pt7b.yAdvance;
-    drawMultilineCenteredText("You found\nthe treasure!\n\nCongratulations!", 120, lineHeight);
+    drawMultilineCenteredText(
+        "Now all whisper\nstones are found,\n"
+        "But whispers barely\nmake a sound.\n"
+        "To make their\nshy voices complete,\n"
+        "Bring the whispers\nto his feet.",
+        125, lineHeight);
   } while (display.nextPage());
   display.hibernate();
 }
