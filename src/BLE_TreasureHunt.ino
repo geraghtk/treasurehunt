@@ -65,11 +65,11 @@ constexpr int SCAN_DURATION = 2;
 //   Penguin    : d6:e7:1f:86:0b:56
 constexpr Clue clues[] = {
     {{0xE4, 0xCE, 0x26, 0x90, 0x96, 0xCF}, "At the start\nwhere you do art", 300, 260, epd_bitmap_picnic},      // Flower
-    {{0xF2, 0x6C, 0x8D, 0x69, 0x56, 0x5D}, "Play play play,\nthe most exciting part of today", 300, 260, epd_bitmap_smallslide},        // Strawberry
-    {{0xD8, 0xFE, 0xB6, 0x49, 0xBE, 0x57}, "Balance is the key,\nthe voices must be set free.", 300, 260, epd_bitmap_exercise},      // Dog
+    {{0xF2, 0x6C, 0x8D, 0x69, 0x56, 0x5D}, "Play play play,\nthe most exciting\npart of today", 300, 260, epd_bitmap_smallslide},        // Strawberry
+    {{0xD8, 0xFE, 0xB6, 0x49, 0xBE, 0x57}, "Balance is the key,\nthe voices must be\nset free.", 300, 260, epd_bitmap_exercise},      // Dog
     {{0xD5, 0x65, 0xC6, 0x25, 0xA1, 0x5A}, "Spiral down,\nlook from the ground", 300, 260, epd_bitmap_windyslide},              // Cat
-    {{0xE6, 0xB9, 0x7D, 0x7D, 0x4B, 0x8E}, "Gates and fences,\ndon't forget the benches", 300, 260, epd_bitmap_tennis},             // Dumbo
-    {{0xD6, 0xE7, 0x1F, 0x86, 0x0B, 0x56}, "There was a beautiful tree,\nwith kids climbing free.", 300, 260, epd_bitmap_stonehenge}};    // Penguin
+    {{0xE6, 0xB9, 0x7D, 0x7D, 0x4B, 0x8E}, "Gates and fences,\ndon't forget the\nbenches", 300, 260, epd_bitmap_tennis},             // Dumbo
+    {{0xD6, 0xE7, 0x1F, 0x86, 0x0B, 0x56}, "There was a beautiful\ntree,\nwith kids climbing\nfree.", 300, 260, epd_bitmap_stonehenge}};    // Penguin
 constexpr int TOTAL_CLUES = sizeof(clues) / sizeof(Clue);
 // Threshold of how strong signal needs to be. Range from -90 (weak) to 0 (strong)
 // Higher values (i.e. less negative, closer to zero) mean the player will need to get closer to each beacon
